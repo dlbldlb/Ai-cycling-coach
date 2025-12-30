@@ -11,14 +11,14 @@ ATHLETE_ID = os.environ["ATHLETE_ID"]
 def run_coach():
     auth = ('API_KEY', INTERVALS_API_KEY)
     
-    # [핵심 수정] 서버 시간(UTC)에 9시간을 더해 한국 시간(KST)을 구함
+    # 한국 시간(KST) 계산
     kst_now = datetime.now() + timedelta(hours=9)
     today_str = kst_now.strftime("%Y-%m-%d")
     yesterday_str = (kst_now - timedelta(days=1)).strftime("%Y-%m-%d")
     
     print(f"🕒 Korea Time(KST): {kst_now}")
 
-    # 1. 어제 미수행 훈련 정리 (KST 기준 어제)
+    # 1. 어제 미수행 훈련 정리
     try:
         url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/events"
         resp = requests.get(url, auth=auth, params={"oldest": yesterday_str, "newest": yesterday_str})
@@ -30,7 +30,7 @@ def run_coach():
         print(f"⚠️ Cleanup error: {e}")
 
     try:
-        # 2. 데이터 추출 (KST 기준 오늘까지의 데이터)
+        # 2. 데이터 추출
         w_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/wellness"
         w_resp = requests.get(w_url, auth=auth, params={"oldest": today_str})
         w_data = w_resp.json()[-1] if w_resp.json() else {}
@@ -58,17 +58,20 @@ def run_coach():
         
         clean_code = "\n".join([l.strip() for l in workout_text.split('\n') if l.strip().startswith('-')])
 
-        # 4. Intervals.icu 등록 (오늘 날짜 19:00로 설정)
+        # 4. Intervals.icu 파싱 및 등록
+        # 먼저 코드를 파싱해서 구조화된 데이터를 받습니다.
         parse_resp = requests.post(f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/workouts/parse", 
                                    auth=auth, json={"description": clean_code})
+        parsed_data = parse_resp.json()
         
-        # [핵심 수정] start_date_local을 한국 시간(kst_now) 기준으로 설정
+        # [핵심 수정] workout_doc 대신 'workout' 키에 파싱된 데이터를 통째로 넣습니다.
         event = {
             "start_date_local": kst_now.replace(hour=19, minute=0, second=0).strftime("%Y-%m-%dT%H:%M:%S"),
-            "type": "Ride", "category": "WORKOUT",
+            "type": "Ride", 
+            "category": "WORKOUT",
             "name": f"AI Coach: eFTP {int(current_ftp)} / TSB {tsb:.1f}",
-            "description": clean_code,
-            "workout_doc": {"steps": parse_resp.json().get('steps', [])}
+            "description": clean_code,  # 텍스트 설명 (사람용)
+            "workout": parsed_data      # 구조화된 데이터 (그래프용) <-- 여기가 수정됨
         }
         
         final_res = requests.post(f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/events/bulk?upsert=true", auth=auth, json=[event])
