@@ -122,8 +122,7 @@ def run_daily_coach():
            - ACTION: IGNORE TSB. Do NOT prescribe High Intensity.
            - Focus: Base Building / Re-adaptation.
            - Intensity: STRICTLY Zone 2 (Endurance).
-           - Target Power: 55-65% of FTP (Conservative target).
-           - Structure: Steady riding with optional spin-ups (high cadence, low power).
+           - Structure: Composed in various ways so as not to be boring.
            
         2. PHASE CHECK: NORMAL TRAINING (Only if CTL >= 30)
            Analyze TSB:
