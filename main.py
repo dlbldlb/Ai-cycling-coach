@@ -11,37 +11,67 @@ ATHLETE_ID = os.environ["ATHLETE_ID"]
 def run_coach():
     auth = ('API_KEY', INTERVALS_API_KEY)
     
-    # 한국 시간(KST) 계산
+    # 한국 시간(KST)
     kst_now = datetime.now() + timedelta(hours=9)
     today_str = kst_now.strftime("%Y-%m-%d")
     
     print(f"🕒 Korea Time(KST): {kst_now}")
 
-    # [중요 변경] '미수행 훈련 삭제' 로직을 제거했습니다. 
-    # 페어링 실패로 인한 억울한 삭제를 방지하기 위함입니다.
-
     try:
-        # 1. 데이터 추출 (오늘 날짜 기준)
+        # -----------------------------------------------------------
+        # 1. 데이터 추출 (가정(Assumption) 제거 버전)
+        # -----------------------------------------------------------
+        
+        # (1) Wellness에서 eFTP 시도
         w_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/wellness"
         w_resp = requests.get(w_url, auth=auth, params={"oldest": today_str})
         w_data = w_resp.json()[-1] if w_resp.json() else {}
         
         ride_info = next((i for i in w_data.get('sportInfo', []) if i.get('type') == 'Ride'), {})
-        current_ftp = ride_info.get('eftp') or 175
-        w_prime = ride_info.get('wPrime') or 14000
+        current_ftp = ride_info.get('eftp')
+        w_prime = ride_info.get('wPrime')
+        
+        source = "eFTP (Wellness)"
+
+        # (2) eFTP 없으면 -> 사용자 설정(Settings)에서 FTP 가져오기
+        if current_ftp is None:
+            print("⚠️ eFTP not found. Fetching User Settings...")
+            settings_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}"
+            s_resp = requests.get(settings_url, auth=auth)
+            
+            if s_resp.status_code == 200:
+                s_data = s_resp.json()
+                # sportSettings에서 Ride 타입 찾기
+                ride_settings = next((s for s in s_data.get('sportSettings', []) if 'Ride' in s.get('types', [])), {})
+                current_ftp = ride_settings.get('ftp')
+                w_prime = ride_settings.get('w_prime')
+                source = "FTP (Settings)"
+        
+        # (3) 그래도 없으면? 에러 발생시키고 종료 (175로 가정하지 않음)
+        if current_ftp is None:
+            print("❌ Critical Error: FTP/eFTP data not found in Intervals.icu.")
+            print("   Please check if your 'Ride' FTP is set in Settings.")
+            exit(1) # 강제 종료
+
+        # W'가 설정에 없는 경우 (0 또는 None일 수 있음)
+        if w_prime is None:
+            w_prime = 0 # W'는 없으면 0으로 두어 AI가 참고만 하게 함 (임의의 14000 설정 금지)
+
         tsb = w_data.get('ctl', 0) - w_data.get('atl', 0)
         
-        print(f"📊 Data: eFTP {current_ftp}, W' {w_prime}, TSB {tsb}")
+        print(f"📊 Using Data [{source}]: FTP {current_ftp}W, W' {w_prime}J, TSB {tsb:.1f}")
 
+        # -----------------------------------------------------------
         # 2. Gemini 2.5 Flash 훈련 설계
+        # -----------------------------------------------------------
         prompt = f"""
-        Athlete Data: eFTP {current_ftp}W, W' {w_prime}J, TSB {tsb:.1f}
+        Athlete Data: FTP {current_ftp}W, W' {w_prime}J, TSB {tsb:.1f}
         Task: Create a 1-hour cycling workout code.
         Rules:
         - Output ONLY the workout code lines. No text, no explanation.
         - Do NOT use loops (like 3x). Unroll all steps.
         - Start every line with a hyphen (-).
-        - Example format:
+        - Format Example:
           - 10m 50% Warmup
           - 5m 90% Interval
         """
@@ -53,31 +83,25 @@ def run_coach():
         # 코드 정제
         clean_code = "\n".join([l.strip() for l in workout_text.split('\n') if l.strip().startswith('-')])
 
-        # 3. Intervals.icu 파싱 및 등록
-        # 먼저 텍스트를 파싱해서 완벽한 워크아웃 객체를 받습니다.
-        parse_resp = requests.post(f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/workouts/parse", 
-                                   auth=auth, json={"description": clean_code})
-        
-        if parse_resp.status_code != 200:
-            print(f"❌ Parse Failed: {parse_resp.text}")
-            exit(1)
-
-        parsed_workout = parse_resp.json()
-        
-        # [핵심 수정] workout_doc 키에 파싱된 객체 전체를 넣습니다.
+        # -----------------------------------------------------------
+        # 3. Intervals.icu 등록 (그래프 생성 포함)
+        # -----------------------------------------------------------
         event = {
             "start_date_local": kst_now.replace(hour=19, minute=0, second=0).strftime("%Y-%m-%dT%H:%M:%S"),
             "type": "Ride", 
             "category": "WORKOUT",
-            "name": f"AI Coach: eFTP {int(current_ftp)} / TSB {tsb:.1f}",
-            "description": clean_code,      # 텍스트 설명
-            "workout_doc": parsed_workout   # 그래프 데이터 (이 키가 정답입니다)
+            "name": f"AI Coach: FTP {int(current_ftp)} / TSB {tsb:.1f}",
+            "workout": {
+                "description": clean_code,
+                "sport": "Ride"
+            }
         }
         
         final_res = requests.post(f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/events/bulk?upsert=true", auth=auth, json=[event])
         
         if final_res.status_code == 200:
             print(f"✅ Workout created successfully for {today_str} (KST)!")
+            print(f"📝 Code:\n{clean_code}")
         else:
             print(f"❌ Failed to create workout: {final_res.text}")
 
