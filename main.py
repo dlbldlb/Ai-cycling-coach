@@ -1,5 +1,7 @@
 import os
 import requests
+import csv
+import io
 import json
 from datetime import datetime, timedelta
 
@@ -9,7 +11,7 @@ from datetime import datetime, timedelta
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 INTERVALS_API_KEY = os.environ["INTERVALS_API_KEY"]
 ATHLETE_ID = os.environ["ATHLETE_ID"]
-TARGET_FOLDER_ID = 224530
+TARGET_FOLDER_ID = 224530  # 용길님 Workouts 폴더 ID
 
 def run_daily_coach():
     auth = ('API_KEY', INTERVALS_API_KEY)
@@ -21,9 +23,9 @@ def run_daily_coach():
 
     try:
         # ----------------------------------------------------------------------
-        # 2. 데이터 추출 1: Wellness (FTP, W', TSB)
+        # 2. 데이터 추출 1: Wellness (기본 스펙 - FTP, W', TSB)
         # ----------------------------------------------------------------------
-        print("1️⃣ Fetching Wellness Data...")
+        print("1️⃣ Fetching Wellness Data (Base Specs)...")
         w_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/wellness"
         w_resp = requests.get(w_url, auth=auth, params={"oldest": today_str})
         w_data = w_resp.json()[-1] if w_resp.json() else {}
@@ -36,7 +38,6 @@ def run_daily_coach():
         atl = w_data.get('atl', 0)
         tsb = ctl - atl
 
-        # eFTP가 없으면 Settings에서 가져오기
         if current_ftp is None:
             s_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}"
             s_resp = requests.get(s_url, auth=auth)
@@ -47,63 +48,72 @@ def run_daily_coach():
                 w_prime = ride_settings.get('w_prime')
 
         if current_ftp is None:
-            print("❌ [Critical] FTP data not found.")
+            print("❌ [Critical] FTP data not found. Exiting.")
             exit(1)
             
-        if w_prime is None: w_prime = 0
+        if w_prime is None: w_prime = 0 
 
         # ----------------------------------------------------------------------
-        # 3. 데이터 추출 2: Power Curve (스마트 탐색 로직 적용됨)
+        # 3. 데이터 추출 2: Power Curve (CSV - 42d 5분 파워 181W 채굴)
         # ----------------------------------------------------------------------
-        print("2️⃣ Fetching Power Curve (Priority: 42d > Currency > Season > 1y)...")
-        p_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/power-curves"
-        # [수정] type 파라미터 필수!
-        p_resp = requests.get(p_url, auth=auth, params={'type': 'Ride'})
+        print("2️⃣ Fetching Power Curve via CSV (Targeting 5m Power)...")
         
-        five_min_power = int(current_ftp * 1.2) # 기본값 (안전빵)
-        curve_source = "Estimated (FTP*1.2)"
-
-        if p_resp.status_code == 200:
-            p_data = p_resp.json()
-            curve_list = p_data.get('list', [])
+        from_date = kst_now.isoformat()
+        csv_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/power-curves.csv"
+        params = {
+            'curves': '42d',
+            'type': 'Ride',
+            'from': from_date
+        }
+        
+        csv_resp = requests.get(csv_url, auth=auth, params=params)
+        
+        # [수정] 안전장치 제거: 변수 초기화 없음. 실패시 즉시 종료.
+        five_min_power = None
+        curve_source = None
+        
+        if csv_resp.status_code == 200:
+            f = io.StringIO(csv_resp.text)
+            reader = csv.DictReader(f)
             
-            # [스마트 탐색] 우선순위대로 커브를 찾습니다.
-            target_curve = None
-            
-            # 1순위: 42d (최근 6주)
-            target_curve = next((c for c in curve_list if c.get('id') == '42d'), None)
-            
-            # 2순위: Currency (현재 상태)
-            if not target_curve:
-                target_curve = next((c for c in curve_list if c.get('id') == 'currency'), None)
+            if reader.fieldnames:
+                clean_headers = [name.replace('\ufeff', '').strip() for name in reader.fieldnames]
+                reader.fieldnames = clean_headers
                 
-            # 3순위: Season (이번 시즌)
-            if not target_curve:
-                target_curve = next((c for c in curve_list if c.get('id') == 'season'), None)
+                target_col = next((col for col in clean_headers if '42' in col), None)
                 
-            # 4순위: 1y (1년 - 최후의 보루)
-            if not target_curve and len(curve_list) > 0:
-                target_curve = curve_list[0] 
-
-            if target_curve:
-                c_id = target_curve.get('id')
-                c_label = target_curve.get('label', c_id)
-                secs_list = target_curve.get('secs', [])
-                watts_list = target_curve.get('watts', [])
-                
-                # 300초(5분) 찾기
-                if 300 in secs_list:
-                    idx = secs_list.index(300)
-                    five_min_power = watts_list[idx]
-                    curve_source = f"{c_label} ({c_id})"
+                if target_col:
+                    print(f"   👉 Target Column Found: '{target_col}'")
+                    for row in reader:
+                        secs_val = row.get('secs') or row.get('Time')
+                        if secs_val and float(secs_val) == 300.0:
+                            p_val = row.get(target_col)
+                            if p_val:
+                                five_min_power = int(float(p_val))
+                                curve_source = f"CSV ({target_col})"
+                                print(f"   🎯 Found 5m Power: {five_min_power} W")
+                            break
+                    
+                    # 5분 파워를 못 찾았으면 종료
+                    if five_min_power is None:
+                        print(f"❌ [Error] 300s (5m) data not found in CSV. Exiting.")
+                        exit(1)
                 else:
-                     print(f"   ⚠️ 300s data not found in {c_id}. Using estimate.")
+                     print(f"❌ [Error] Column with '42' not found in CSV headers: {clean_headers}. Exiting.")
+                     exit(1)
+            else:
+                print("❌ [Error] Empty CSV headers. Exiting.")
+                exit(1)
+        else:
+            print(f"❌ [Error] CSV Download Failed: {csv_resp.status_code}. Exiting.")
+            exit(1)
 
-        print(f"   📊 Final Data: FTP {current_ftp}W, 5m Power {five_min_power}W ({curve_source})")
+        print(f"   📊 Final Data: FTP {current_ftp}W, W' {w_prime}J")
+        print(f"   📊 5m Max Power (42d): {five_min_power}W ({curve_source})")
         print(f"   📊 Condition: TSB {tsb:.1f} (Fitness {ctl:.1f} / Fatigue {atl:.1f})")
 
         # ----------------------------------------------------------------------
-        # 4. Gemini 훈련 설계
+        # 4. Gemini 훈련 설계 (데이터 기반)
         # ----------------------------------------------------------------------
         print("3️⃣ Asking Gemini to design workout...")
         
@@ -112,9 +122,9 @@ def run_daily_coach():
         Task: Create a 1-hour structured cycling workout code for Intervals.icu.
         
         [ATHLETE DATA]
-        - FTP: {current_ftp} W
+        - FTP (Base): {current_ftp} W
         - W' (Anaerobic Capacity): {w_prime} J
-        - 5-min Max Power: {five_min_power} W
+        - 5-min Max Power (Recent 42d Actual): {five_min_power} W
         - TSB (Form): {tsb:.1f}
 
         [COACHING LOGIC]
@@ -125,12 +135,13 @@ def run_daily_coach():
         
         2. -10 <= TSB <= 10 (Optimal):
            - Focus: Sweet Spot or Threshold.
-           - Intensity: 88-100% FTP.
+           - Intensity: 88-100% of FTP ({current_ftp}W).
            - Build endurance with long intervals (10m+).
            
         3. TSB > 10 (Fresh):
            - Focus: VO2 Max or Anaerobic.
            - Interval Target: 90-95% of "5-min Max Power" ({int(five_min_power*0.9)}W - {int(five_min_power*0.95)}W).
+           - Note: Do NOT use FTP for VO2Max targets. Use the provided 5-min max power ({five_min_power}W) as the ceiling.
            - Short, hard efforts (2-4 min) to drain W'.
 
         [STRICT OUTPUT FORMAT]
@@ -153,7 +164,6 @@ def run_daily_coach():
 
         raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
         
-        # 텍스트 정제
         lines = raw_text.split('\n')
         clean_lines = []
         for line in lines:
@@ -189,7 +199,7 @@ def run_daily_coach():
         print(f"   ✅ ID Created: {workout_id}")
 
         # ----------------------------------------------------------------------
-        # 6. 캘린더 등록 (그래프 보장)
+        # 6. 캘린더 등록
         # ----------------------------------------------------------------------
         print("5️⃣ Scheduling to Calendar...")
         event_payload = {
