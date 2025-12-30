@@ -19,10 +19,8 @@ def run_coach():
 
     try:
         # -----------------------------------------------------------
-        # 1. 데이터 추출 (가정(Assumption) 제거 버전)
+        # 1. 데이터 추출
         # -----------------------------------------------------------
-        
-        # (1) Wellness에서 eFTP 시도
         w_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/wellness"
         w_resp = requests.get(w_url, auth=auth, params={"oldest": today_str})
         w_data = w_resp.json()[-1] if w_resp.json() else {}
@@ -33,29 +31,22 @@ def run_coach():
         
         source = "eFTP (Wellness)"
 
-        # (2) eFTP 없으면 -> 사용자 설정(Settings)에서 FTP 가져오기
+        # eFTP 없으면 Settings에서 가져오기
         if current_ftp is None:
-            print("⚠️ eFTP not found. Fetching User Settings...")
             settings_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}"
             s_resp = requests.get(settings_url, auth=auth)
-            
             if s_resp.status_code == 200:
                 s_data = s_resp.json()
-                # sportSettings에서 Ride 타입 찾기
                 ride_settings = next((s for s in s_data.get('sportSettings', []) if 'Ride' in s.get('types', [])), {})
                 current_ftp = ride_settings.get('ftp')
                 w_prime = ride_settings.get('w_prime')
                 source = "FTP (Settings)"
         
-        # (3) 그래도 없으면? 에러 발생시키고 종료 (175로 가정하지 않음)
         if current_ftp is None:
-            print("❌ Critical Error: FTP/eFTP data not found in Intervals.icu.")
-            print("   Please check if your 'Ride' FTP is set in Settings.")
-            exit(1) # 강제 종료
+            print("❌ Critical Error: FTP data not found.")
+            exit(1)
 
-        # W'가 설정에 없는 경우 (0 또는 None일 수 있음)
-        if w_prime is None:
-            w_prime = 0 # W'는 없으면 0으로 두어 AI가 참고만 하게 함 (임의의 14000 설정 금지)
+        if w_prime is None: w_prime = 0 
 
         tsb = w_data.get('ctl', 0) - w_data.get('atl', 0)
         
@@ -80,11 +71,10 @@ def run_coach():
         res = requests.post(gemini_url, json={"contents": [{"parts": [{"text": prompt}]}]})
         workout_text = res.json()['candidates'][0]['content']['parts'][0]['text'].strip()
         
-        # 코드 정제
         clean_code = "\n".join([l.strip() for l in workout_text.split('\n') if l.strip().startswith('-')])
 
         # -----------------------------------------------------------
-        # 3. Intervals.icu 등록 (그래프 생성 포함)
+        # 3. Intervals.icu 등록
         # -----------------------------------------------------------
         event = {
             "start_date_local": kst_now.replace(hour=19, minute=0, second=0).strftime("%Y-%m-%dT%H:%M:%S"),
@@ -92,6 +82,7 @@ def run_coach():
             "category": "WORKOUT",
             "name": f"AI Coach: FTP {int(current_ftp)} / TSB {tsb:.1f}",
             "workout": {
+                "athlete_id": ATHLETE_ID,   # <--- [핵심 수정] 여기에 ID 명찰을 붙였습니다!
                 "description": clean_code,
                 "sport": "Ride"
             }
