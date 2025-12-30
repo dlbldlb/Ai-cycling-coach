@@ -3,41 +3,40 @@ import requests
 import json
 from datetime import datetime, timedelta
 
-# GitHub Secrets
+# ------------------------------------------------------------------------------
+# [설정] GitHub Secrets 환경변수
+# ------------------------------------------------------------------------------
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 INTERVALS_API_KEY = os.environ["INTERVALS_API_KEY"]
 ATHLETE_ID = os.environ["ATHLETE_ID"]
-TARGET_FOLDER_ID = 224530
+TARGET_FOLDER_ID = 224530  # 용길님 Workouts 폴더
 
 def run_daily_coach():
     auth = ('API_KEY', INTERVALS_API_KEY)
     
-    # 1. 한국 시간(KST)
+    # 1. 한국 시간(KST) 설정
     kst_now = datetime.now() + timedelta(hours=9)
     today_str = kst_now.strftime("%Y-%m-%d")
     print(f"🚀 [AI Coach] Started at {kst_now} (KST)")
 
     try:
         # ----------------------------------------------------------------------
-        # 2. 데이터 추출 (Wellness + Power Curve)
+        # 2. 데이터 추출 1: Wellness (FTP, W', TSB)
         # ----------------------------------------------------------------------
-        print("1️⃣ Fetching Athlete Data...")
-        
-        # (1) Wellness 데이터 (CTL, ATL, TSB, eFTP, W')
+        print("1️⃣ Fetching Wellness Data...")
         w_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/wellness"
         w_resp = requests.get(w_url, auth=auth, params={"oldest": today_str})
         w_data = w_resp.json()[-1] if w_resp.json() else {}
         
         ride_info = next((i for i in w_data.get('sportInfo', []) if i.get('type') == 'Ride'), {})
         
-        # 데이터 매핑
         current_ftp = ride_info.get('eftp')
         w_prime = ride_info.get('wPrime')
-        ctl = w_data.get('ctl', 0)      # Fitness (TCL)
-        atl = w_data.get('atl', 0)      # Fatigue (ACL)
-        tsb = ctl - atl                 # Form (TSB)
+        ctl = w_data.get('ctl', 0)
+        atl = w_data.get('atl', 0)
+        tsb = ctl - atl
 
-        # eFTP 없으면 설정값 조회
+        # eFTP가 없으면 Settings에서 가져오기
         if current_ftp is None:
             s_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}"
             s_resp = requests.get(s_url, auth=auth)
@@ -48,39 +47,62 @@ def run_daily_coach():
                 w_prime = ride_settings.get('w_prime')
 
         if current_ftp is None:
-            print("❌ [Critical Error] FTP data not found.")
+            print("❌ [Critical] FTP data not found.")
             exit(1)
             
         if w_prime is None: w_prime = 0
 
-        # (2) 5분 최대 파워 (Power Curve) 조회 (최근 42일 기준)
-        # 5분 파워는 VO2Max 훈련의 천장(Ceiling)을 정하는 중요한 지표입니다.
+        # ----------------------------------------------------------------------
+        # 3. 데이터 추출 2: Power Curve (스마트 탐색)
+        # ----------------------------------------------------------------------
+        print("2️⃣ Fetching Power Curve (Priority: 42d > Currency > Season > 1y)...")
         p_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/power-curves"
-        p_resp = requests.get(p_url, auth=auth)
-        five_min_power = 0
+        p_resp = requests.get(p_url, auth=auth, params={'type': 'Ride'})
         
+        five_min_power = int(current_ftp * 1.2) # 기본값 (안전빵)
+        curve_source = "Estimated (FTP*1.2)"
+
         if p_resp.status_code == 200:
-            curves = p_resp.json()
-            # 'days': 42 (최근 6주 데이터) -> 'field': 'currency' (현재 능력)
-            # API 구조에 따라 다를 수 있으나 보통 currency나 시즌 최고기록을 씁니다.
-            # 여기서는 편의상 FTP 대비 추정치 혹은 안전하게 FTP의 120%로 가정하되,
-            # 실제 API 응답에 5분(300초) 데이터가 있다면 그걸 씁니다.
-            # (복잡성을 줄이기 위해 여기서는 프롬프트에 'If available' 로직을 태우거나, 
-            #  단순히 FTP 기반으로 가이드하되 5m 파워가 있다면 명시해줍니다.)
+            p_data = p_resp.json()
+            curve_list = p_data.get('list', [])
             
-            # *참고: 파워커브 API가 복잡하므로, 여기서는 FTP 기준으로 프롬프트를 강화하는 방향 추천
-            # 용길님이 "데이터가 있다"고 하셨으니 값을 직접 넣거나, FTP의 1.2배로 추산하여 전달
-            five_min_power = int(current_ftp * 1.2) # (임시) 데이터가 API로 안 넘어올 경우 대비
-        
-        print(f"   📊 Data Loaded: FTP {current_ftp}W, W' {w_prime}J")
-        print(f"   📊 Status: CTL {ctl:.1f}, ATL {atl:.1f}, TSB {tsb:.1f}")
+            # [우선순위 로직]
+            # 1. 42d (최근 6주)
+            target_curve = next((c for c in curve_list if c.get('id') == '42d'), None)
+            
+            # 2. Currency (현재 상태)
+            if not target_curve:
+                target_curve = next((c for c in curve_list if c.get('id') == 'currency'), None)
+                
+            # 3. Season (이번 시즌)
+            if not target_curve:
+                target_curve = next((c for c in curve_list if c.get('id') == 'season'), None)
+                
+            # 4. 1y (1년 - 최후의 보루, 현재 208W 확인됨)
+            if not target_curve and len(curve_list) > 0:
+                target_curve = curve_list[0] # 보통 리스트 첫번째가 가장 대표적인 커브
+
+            if target_curve:
+                c_id = target_curve.get('id')
+                c_label = target_curve.get('label', c_id)
+                secs_list = target_curve.get('secs', [])
+                watts_list = target_curve.get('watts', [])
+                
+                if 300 in secs_list:
+                    idx = secs_list.index(300)
+                    five_min_power = watts_list[idx]
+                    curve_source = f"{c_label} ({c_id})"
+                else:
+                     print(f"   ⚠️ 300s data not found in {c_id}. Using estimate.")
+
+        print(f"   📊 Final Data: FTP {current_ftp}W, 5m Power {five_min_power}W ({curve_source})")
+        print(f"   📊 Condition: TSB {tsb:.1f} (Fitness {ctl:.1f} / Fatigue {atl:.1f})")
 
         # ----------------------------------------------------------------------
-        # 3. Gemini 훈련 설계 (데이터 기반 재구성)
+        # 4. Gemini 훈련 설계 (데이터 기반 프롬프트)
         # ----------------------------------------------------------------------
-        print("2️⃣ Asking Gemini to design workout...")
+        print("3️⃣ Asking Gemini to design workout...")
         
-        # 프롬프트 대폭 강화
         prompt = f"""
         Role: Expert Cycling Coach (Data-Driven).
         Task: Create a 1-hour structured cycling workout code for Intervals.icu.
@@ -88,43 +110,34 @@ def run_daily_coach():
         [ATHLETE DATA]
         - FTP: {current_ftp} W
         - W' (Anaerobic Capacity): {w_prime} J
-        - 5-min Max Power (Est): {five_min_power} W
-        - CTL (Fitness): {ctl:.1f}
-        - ATL (Fatigue): {atl:.1f}
+        - 5-min Max Power: {five_min_power} W
         - TSB (Form): {tsb:.1f}
 
         [COACHING LOGIC]
-        Analyze the TSB (Training Stress Balance) to decide the workout type:
-        1. IF TSB < -10 (Fatigued):
-           - Goal: Active Recovery.
-           - Intensity: Zone 1-2 (below 75% FTP).
-           - No intervals. Keep it steady and easy.
+        Analyze TSB to decide intensity:
+        1. TSB < -10 (Fatigued):
+           - Focus: Active Recovery (Zone 1-2).
+           - NO intervals. Pure endurance.
         
-        2. IF -10 <= TSB <= 10 (Maintenance/Build):
-           - Goal: Aerobic Capacity or Sweet Spot.
-           - Intensity: Sweet Spot (88-94% FTP) or Threshold (95-100% FTP).
-           - Structure: 2-3 long intervals (e.g., 10-15 min).
+        2. -10 <= TSB <= 10 (Optimal):
+           - Focus: Sweet Spot or Threshold.
+           - Intensity: 88-100% FTP.
+           - Build endurance with long intervals (10m+).
            
-        3. IF TSB > 10 (Fresh):
-           - Goal: High Intensity (VO2 Max or Anaerobic).
-           - Intensity: Intervals above 106% FTP.
-           - Use "5-min Max Power" ({five_min_power}W) as a reference cap for hard efforts.
-           - Ensure intervals drain W' but allow recovery.
+        3. TSB > 10 (Fresh):
+           - Focus: VO2 Max or Anaerobic.
+           - Interval Target: 90-95% of "5-min Max Power" ({int(five_min_power*0.9)}W - {int(five_min_power*0.95)}W).
+           - Short, hard efforts (2-4 min) to drain W'.
 
-        [STRICT OUTPUT RULES]
-        - Output ONLY the workout steps text.
-        - Syntax: "- [Duration] [Intensity] [Text]" or "- [Duration] [Power] [Text]"
-        - Use 'm' for minutes, 's' for seconds.
-        - Start EVERY line with a hyphen "-".
-        - UNROLL all loops (Do NOT use '3x', write lines explicitly).
-        - NO introductory text, NO explanations.
-        
-        [EXAMPLE OUTPUT]
-        - 10m 50% Warmup
-        - 10m 90% SweetSpot
-        - 5m 50% Recovery
-        - 10m 90% SweetSpot
-        - 10m 50% Cooldown
+        [STRICT OUTPUT FORMAT]
+        - Output ONLY the workout lines.
+        - Start every line with "-".
+        - Format: "- [Duration] [Intensity] [Text]"
+        - Example:
+          - 10m 50% Warmup
+          - 5m 92% SweetSpot
+        - NO intro/outro text.
+        - UNROLL LOOPS (Write each step explicitly).
         """
         
         gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -146,18 +159,15 @@ def run_daily_coach():
                 line = "- " + line
             if line.startswith('-'):
                 clean_lines.append(line)
-                
         clean_code = "\n".join(clean_lines)
+        
         print(f"   📝 Generated Code:\n{'-'*20}\n{clean_code}\n{'-'*20}")
-
-        if not clean_code:
-            print("❌ Error: Generated workout code is empty.")
-            exit(1)
+        if not clean_code: exit(1)
 
         # ----------------------------------------------------------------------
-        # 4. 라이브러리 생성
+        # 5. 라이브러리 생성 (ID 발급)
         # ----------------------------------------------------------------------
-        print(f"3️⃣ Creating Library Workout (Folder ID: {TARGET_FOLDER_ID})...")
+        print(f"4️⃣ Creating Library Workout (Folder ID: {TARGET_FOLDER_ID})...")
         workout_payload = {
             "name": f"AI Coach: TSB {tsb:.1f} / FTP {int(current_ftp)}",
             "description": clean_code,
@@ -166,39 +176,33 @@ def run_daily_coach():
             "folder_id": TARGET_FOLDER_ID
         }
         
-        create_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/workouts"
-        create_resp = requests.post(create_url, auth=auth, json=workout_payload)
-        
+        create_resp = requests.post(f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/workouts", auth=auth, json=workout_payload)
         if create_resp.status_code != 200:
-            print(f"❌ Failed to create library workout: {create_resp.text}")
+            print(f"❌ Library Error: {create_resp.text}")
             exit(1)
             
-        workout_data = create_resp.json()
-        workout_id = workout_data['id']
-        print(f"   ✅ Library Workout Created! ID: {workout_id}")
+        workout_id = create_resp.json()['id']
+        print(f"   ✅ ID Created: {workout_id}")
 
         # ----------------------------------------------------------------------
-        # 5. 캘린더 등록 (양방향 주입)
+        # 6. 캘린더 등록 (그래프 보장 - Dual Injection)
         # ----------------------------------------------------------------------
-        print("4️⃣ Scheduling to Calendar...")
-        
+        print("5️⃣ Scheduling to Calendar...")
         event_payload = {
             "category": "WORKOUT",
             "start_date_local": kst_now.replace(hour=19, minute=0, second=0).strftime("%Y-%m-%dT%H:%M:%S"),
-            "name": f"AI Coach: TSB {tsb:.1f}", # 제목을 TSB 위주로 변경
+            "name": f"AI Coach: TSB {tsb:.1f}",
             "type": "Ride",
             "workout_id": workout_id,
-            "description": clean_code
+            "description": clean_code # [핵심] 텍스트 재주입으로 그래프 강제화
         }
         
-        event_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/events/bulk?upsert=true"
-        final_res = requests.post(event_url, auth=auth, json=[event_payload])
+        final_res = requests.post(f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/events/bulk?upsert=true", auth=auth, json=[event_payload])
         
         if final_res.status_code == 200:
-            print(f"🎉 Success! Workout scheduled for {today_str} 19:00 (KST).")
+            print(f"🎉 Success! Workout scheduled for {today_str} 19:00.")
         else:
-            print(f"❌ Failed to schedule event: {final_res.text}")
-            exit(1)
+            print(f"❌ Schedule Error: {final_res.text}")
 
     except Exception as e:
         print(f"❌ Critical Error: {e}")
