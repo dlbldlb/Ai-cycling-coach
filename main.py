@@ -9,7 +9,7 @@ from datetime import datetime, timedelta
 GEMINI_API_KEY = os.environ["GEMINI_API_KEY"]
 INTERVALS_API_KEY = os.environ["INTERVALS_API_KEY"]
 ATHLETE_ID = os.environ["ATHLETE_ID"]
-TARGET_FOLDER_ID = 224530  # 용길님 Workouts 폴더
+TARGET_FOLDER_ID = 224530
 
 def run_daily_coach():
     auth = ('API_KEY', INTERVALS_API_KEY)
@@ -53,10 +53,11 @@ def run_daily_coach():
         if w_prime is None: w_prime = 0
 
         # ----------------------------------------------------------------------
-        # 3. 데이터 추출 2: Power Curve (스마트 탐색)
+        # 3. 데이터 추출 2: Power Curve (스마트 탐색 로직 적용됨)
         # ----------------------------------------------------------------------
         print("2️⃣ Fetching Power Curve (Priority: 42d > Currency > Season > 1y)...")
         p_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/power-curves"
+        # [수정] type 파라미터 필수!
         p_resp = requests.get(p_url, auth=auth, params={'type': 'Ride'})
         
         five_min_power = int(current_ftp * 1.2) # 기본값 (안전빵)
@@ -66,21 +67,23 @@ def run_daily_coach():
             p_data = p_resp.json()
             curve_list = p_data.get('list', [])
             
-            # [우선순위 로직]
-            # 1. 42d (최근 6주)
+            # [스마트 탐색] 우선순위대로 커브를 찾습니다.
+            target_curve = None
+            
+            # 1순위: 42d (최근 6주)
             target_curve = next((c for c in curve_list if c.get('id') == '42d'), None)
             
-            # 2. Currency (현재 상태)
+            # 2순위: Currency (현재 상태)
             if not target_curve:
                 target_curve = next((c for c in curve_list if c.get('id') == 'currency'), None)
                 
-            # 3. Season (이번 시즌)
+            # 3순위: Season (이번 시즌)
             if not target_curve:
                 target_curve = next((c for c in curve_list if c.get('id') == 'season'), None)
                 
-            # 4. 1y (1년 - 최후의 보루, 현재 208W 확인됨)
+            # 4순위: 1y (1년 - 최후의 보루)
             if not target_curve and len(curve_list) > 0:
-                target_curve = curve_list[0] # 보통 리스트 첫번째가 가장 대표적인 커브
+                target_curve = curve_list[0] 
 
             if target_curve:
                 c_id = target_curve.get('id')
@@ -88,6 +91,7 @@ def run_daily_coach():
                 secs_list = target_curve.get('secs', [])
                 watts_list = target_curve.get('watts', [])
                 
+                # 300초(5분) 찾기
                 if 300 in secs_list:
                     idx = secs_list.index(300)
                     five_min_power = watts_list[idx]
@@ -99,7 +103,7 @@ def run_daily_coach():
         print(f"   📊 Condition: TSB {tsb:.1f} (Fitness {ctl:.1f} / Fatigue {atl:.1f})")
 
         # ----------------------------------------------------------------------
-        # 4. Gemini 훈련 설계 (데이터 기반 프롬프트)
+        # 4. Gemini 훈련 설계
         # ----------------------------------------------------------------------
         print("3️⃣ Asking Gemini to design workout...")
         
@@ -165,7 +169,7 @@ def run_daily_coach():
         if not clean_code: exit(1)
 
         # ----------------------------------------------------------------------
-        # 5. 라이브러리 생성 (ID 발급)
+        # 5. 라이브러리 생성
         # ----------------------------------------------------------------------
         print(f"4️⃣ Creating Library Workout (Folder ID: {TARGET_FOLDER_ID})...")
         workout_payload = {
@@ -185,7 +189,7 @@ def run_daily_coach():
         print(f"   ✅ ID Created: {workout_id}")
 
         # ----------------------------------------------------------------------
-        # 6. 캘린더 등록 (그래프 보장 - Dual Injection)
+        # 6. 캘린더 등록 (그래프 보장)
         # ----------------------------------------------------------------------
         print("5️⃣ Scheduling to Calendar...")
         event_payload = {
@@ -194,7 +198,7 @@ def run_daily_coach():
             "name": f"AI Coach: TSB {tsb:.1f}",
             "type": "Ride",
             "workout_id": workout_id,
-            "description": clean_code # [핵심] 텍스트 재주입으로 그래프 강제화
+            "description": clean_code
         }
         
         final_res = requests.post(f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/events/bulk?upsert=true", auth=auth, json=[event_payload])
