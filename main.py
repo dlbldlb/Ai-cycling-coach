@@ -131,8 +131,8 @@ def run_daily_coach():
            - TSB > 10 (Fresh): VO2 Max (Hard Intervals).
 
         [STRICT OUTPUT FORMAT]
-        - Output ONLY the workout lines.
-        - Start every line with "-".
+        - Output ONLY the workout lines and athlete data (FTP, W prime, atl, ctl, TSB).
+        - Start every workout line with "-".
         - Format: "- [Duration] [Intensity] [Text]"
         - Example:
           - 10m 50% Warmup
