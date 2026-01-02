@@ -135,12 +135,12 @@ def run_daily_coach():
            - Warmup/Cooldown: MUST use 'ramp' keyword for slopes. (e.g., "- 10m ramp 40-60%")
            - 만약 파워존 단위로 만들고 싶을 경우, '%' 대신 'z1', 'z4'와 같이 'z'와 숫자를 써 준다.(e.g. "- 10m30s ramp z1-z2")
            - Intervals: Start with "-". (e.g., "- 5m 65%")
-           - 반복하고 싶은 경우, "3x", "4x" 와 같이 반복할 횟수를 header로서 써 준다.
-               (e.g. 
-                    "2x
-                     - 5m 40%
-                     - 10m z2
-                     - 5m z4-z5").
+           - UNROLL LOOPS: Do NOT use "3x" or loop headers. Write every single step explicitly.
+             (e.g., Instead of "2x -> 5m z2, 5m z4", write:
+              "- 5m z2"
+              "- 5m z4"
+              "- 5m z2"
+              "- 5m z4")
            - 만약 free ride 세션을 넣고 싶은 경우, 강도 대신 freeride 라고 써 준다. (e.g. "- 5m freeride").
            - (중요!) 새로운 Header를 추가할 경우에는 추가하는 Header 위에 꼭 줄바꿈을 두줄 넣어준다. 
         
@@ -149,12 +149,15 @@ def run_daily_coach():
            
         4. No intro/outro text.
 
-        [작성 예시 (문법 참고만 할 것)] 
+       [작성 예시 (문법 참고만 할 것)] 
             "
             Warmup
             - 10m ramp z1-z2
 
-            3x
+            - 5m z2
+            - 5m z3
+            - 3m z4
+            - 2m Freeride
             - 5m z2
             - 5m z3
             - 3m z4
