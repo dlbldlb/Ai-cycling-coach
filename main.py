@@ -34,9 +34,9 @@ def run_daily_coach():
         
         current_ftp = ride_info.get('eftp')
         w_prime = ride_info.get('wPrime')
-        ctl = w_data.get('ctl', 0)     # Fitness (체력)
-        atl = w_data.get('atl', 0)     # Fatigue (피로)
-        tsb = ctl - atl                # Form (컨디션)
+        ctl = w_data.get('ctl', 0)     # Fitness
+        atl = w_data.get('atl', 0)     # Fatigue
+        tsb = ctl - atl                # Form
 
         # FTP 백업 로직
         if current_ftp is None:
@@ -91,18 +91,17 @@ def run_daily_coach():
                                 print(f"   🎯 Found 5m Power: {five_min_power} W")
                             break
         
-        # 5분 파워가 없으면(2달간 기록 없음) -> 0으로 처리해서 프롬프트에 넘김 (종료하지 않음)
-        # 초기화 상태에서는 5분 파워가 없을 수도 있으므로 유연하게 대처
+        # 5분 파워가 없으면(2달간 기록 없음) -> 0으로 처리해서 초기화 모드 발동
         if five_min_power is None:
             print("   ⚠️ 42일간 기록이 없습니다. (초기화 상태 추정)")
             five_min_power = 0
 
-        print(f"   📊 Status: FTP {current_ftp}W, CTL(Fitness) {ctl:.1f}, TSB {tsb:.1f}")
+        print(f"   📊 Status: FTP {current_ftp}W, CTL {ctl:.1f}, TSB {tsb:.1f}")
 
         # ----------------------------------------------------------------------
-        # 4. Gemini 훈련 설계 (초기화 감지 로직 추가)
+        # 4. Gemini 훈련 설계 (상태 표시 요청 추가)
         # ----------------------------------------------------------------------
-        print("3️⃣ Asking Gemini to design workout (Auto-Scaling Mode)...")
+        print("3️⃣ Asking Gemini to design workout...")
         
         prompt = f"""
         Role: Expert Cycling Coach.
@@ -110,41 +109,30 @@ def run_daily_coach():
         
         [ATHLETE DATA]
         - FTP: {current_ftp} W
-        - W': {w_prime} J
+        - W' (Anaerobic Capacity): {w_prime} J
         - CTL (Fitness): {ctl:.1f}
         - ATL (Fatigue): {atl:.1f}
         - TSB (Form): {tsb:.1f}
         - Recent 5m Max Power: {five_min_power} W
 
-        [INTELLIGENT COACHING LOGIC - PRIORITY ORDER]
-        1. PHASE CHECK: DETRAINING / RETURN TO SPORT
+        [INTELLIGENT COACHING LOGIC]
+        1. DETRAINING CHECK (Priority):
            ** IF CTL < 30 OR Recent 5m Max Power == 0 **:
-           - Diagnosis: Athlete is DETRAINED (reset state).
-           - ACTION: IGNORE TSB. Do NOT prescribe High Intensity.
-           - Focus: Base Building / Re-adaptation.
-           - Intensity: STRICTLY Zone 2 (Endurance, 55-65% FTP).
+           - Diagnosis: Athlete is DETRAINED.
+           - Action: STRICTLY Zone 2 (Endurance, 55-65% FTP). NO High Intensity.
            
-        2. PHASE CHECK: NORMAL TRAINING (Only if CTL >= 30)
-           Analyze TSB:
-           - TSB < -10 (Fatigued): Recovery (Zone 1).
-           - -10 <= TSB <= 10 (Optimal): Sweet Spot (88-93% FTP).
-           - TSB > 10 (Fresh): VO2 Max (Target 90-95% of 5m Max {five_min_power}W).
+        2. NORMAL TRAINING (If CTL >= 30):
+           - TSB < -10: Recovery (Zone 1).
+           - -10 <= TSB <= 10: Sweet Spot.
+           - TSB > 10: VO2 Max (Target 90-95% of 5m Max {five_min_power}W).
 
         [STRICT OUTPUT FORMAT]
-        1. **FIRST LINE (MANDATORY)**: You MUST output the athlete's status summary first.
-           - Format: "Status: FTP {current_ftp}W | W' {w_prime}J | TCL {ctl:.1f} | ACL {atl:.1f} | TSB {tsb:.1f}"
-        
-        2. **WORKOUT LINES**: Follow immediately with the workout steps.
-           - Start every line with "-".
-           - Format: "- [Duration] [Intensity] [Text]"
-           - Example:
-             - 10m 50% Warmup
-             - 40m 60% Base Ride
-        
-        3. **NO** other introductory text or explanations.
+        1. First line MUST be the status summary:
+           "Status: FTP {current_ftp}W | W' {w_prime}J | CTL {ctl:.1f} | ATL {atl:.1f} | TSB {tsb:.1f}"
+        2. Followed by workout steps (start with "-").
+        3. No intro/outro text.
         4. UNROLL LOOPS.
         """
-
         
         gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
         res = requests.post(gemini_url, json={"contents": [{"parts": [{"text": prompt}]}]})
@@ -155,15 +143,29 @@ def run_daily_coach():
 
         raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
         
+        # ----------------------------------------------------------------------
+        # [수정됨] 텍스트 정제 로직: 'Status:' 라인을 살려야 함
+        # ----------------------------------------------------------------------
         lines = raw_text.split('\n')
         clean_lines = []
+        
         for line in lines:
             line = line.strip()
             if not line: continue
+            
+            # 1. 상태 표시줄이면 통과
+            if line.startswith("Status:"):
+                clean_lines.append(line)
+                continue
+                
+            # 2. 숫자로 시작하면 대시 붙여서 통과
             if line[0].isdigit():
                 line = "- " + line
+                
+            # 3. 대시로 시작하면 통과 (워크아웃 스텝)
             if line.startswith('-'):
                 clean_lines.append(line)
+                
         clean_code = "\n".join(clean_lines)
         
         print(f"   📝 Generated Code:\n{'-'*20}\n{clean_code}\n{'-'*20}")
@@ -173,8 +175,15 @@ def run_daily_coach():
         # 5. 라이브러리 및 캘린더 등록
         # ----------------------------------------------------------------------
         print(f"4️⃣ Uploading to Intervals.icu...")
+        
+        # 제목 설정 로직
+        if ctl < 30 or five_min_power == 0:
+            workout_name = f"AI Coach: Detrained (CTL {ctl:.1f})"
+        else:
+            workout_name = f"AI Coach: TSB {tsb:.1f}"
+
         workout_payload = {
-            "name": f"AI Coach: CTL {ctl:.1f} (Return)" if ctl < 30 else f"AI Coach: TSB {tsb:.1f}",
+            "name": workout_name,
             "description": clean_code,
             "type": "Ride",
             "sport": "Ride",
@@ -187,7 +196,7 @@ def run_daily_coach():
         event_payload = {
             "category": "WORKOUT",
             "start_date_local": kst_now.replace(hour=19, minute=0, second=0).strftime("%Y-%m-%dT%H:%M:%S"),
-            "name": f"AI Coach: {'Detrained Mode' if ctl < 30 else 'Training Mode'}",
+            "name": workout_name,
             "type": "Ride",
             "workout_id": workout_id,
             "description": clean_code
