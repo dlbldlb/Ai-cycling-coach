@@ -147,6 +147,24 @@ def run_daily_coach():
            "Status: FTP {current_ftp}W | W' {w_prime}J | CTL {ctl:.1f} | ATL {atl:.1f} | TSB {tsb:.1f}"
            
         4. No intro/outro text.
+
+        [작성 예시 (문법 참고만 할 것)] 
+            "
+            Warmup
+            - 10m ramp z1-z2
+
+            3x
+            - 5m z2
+            - 5m z3
+            - 3m z4
+            - 2m Freeride
+
+            Cooldown
+            - 5m ramp z2-z1
+
+            Status: FTP 168w | W' 13500J | CTL 14 | ATL 3 | TSB 11
+            "
+            
         """
         
         gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
