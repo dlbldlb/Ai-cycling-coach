@@ -109,37 +109,42 @@ def run_daily_coach():
         Task: Create a 1-hour structured cycling workout code for Intervals.icu.
         
         [ATHLETE DATA]
-        - FTP (Stored): {current_ftp} W
+        - FTP: {current_ftp} W
+        - W': {w_prime} J
         - CTL (Fitness): {ctl:.1f}
+        - ATL (Fatigue): {atl:.1f}
         - TSB (Form): {tsb:.1f}
         - Recent 5m Max Power: {five_min_power} W
 
         [INTELLIGENT COACHING LOGIC - PRIORITY ORDER]
-        
         1. PHASE CHECK: DETRAINING / RETURN TO SPORT
            ** IF CTL < 30 OR Recent 5m Max Power == 0 **:
            - Diagnosis: Athlete is DETRAINED (reset state).
            - ACTION: IGNORE TSB. Do NOT prescribe High Intensity.
            - Focus: Base Building / Re-adaptation.
-           - Intensity: STRICTLY Zone 2 (Endurance).
-           - Structure: Composed in various ways so as not to be boring.
+           - Intensity: STRICTLY Zone 2 (Endurance, 55-65% FTP).
            
         2. PHASE CHECK: NORMAL TRAINING (Only if CTL >= 30)
            Analyze TSB:
            - TSB < -10 (Fatigued): Recovery (Zone 1).
            - -10 <= TSB <= 10 (Optimal): Sweet Spot (88-93% FTP).
-           - TSB > 10 (Fresh): VO2 Max (Hard Intervals).
+           - TSB > 10 (Fresh): VO2 Max (Target 90-95% of 5m Max {five_min_power}W).
 
         [STRICT OUTPUT FORMAT]
-        - Output ONLY the workout lines and athlete data (FTP, W prime, atl, ctl, TSB).
-        - Start every workout line with "-".
-        - Format: "- [Duration] [Intensity] [Text]"
-        - Example:
-          - 10m 50% Warmup
-          - 40m 60% Base Ride
-          - 10m 50% Cooldown
-        - UNROLL LOOPS.
+        1. **FIRST LINE (MANDATORY)**: You MUST output the athlete's status summary first.
+           - Format: "Status: FTP {current_ftp}W | W' {w_prime}J | TCL {ctl:.1f} | ACL {atl:.1f} | TSB {tsb:.1f}"
+        
+        2. **WORKOUT LINES**: Follow immediately with the workout steps.
+           - Start every line with "-".
+           - Format: "- [Duration] [Intensity] [Text]"
+           - Example:
+             - 10m 50% Warmup
+             - 40m 60% Base Ride
+        
+        3. **NO** other introductory text or explanations.
+        4. UNROLL LOOPS.
         """
+
         
         gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
         res = requests.post(gemini_url, json={"contents": [{"parts": [{"text": prompt}]}]})
