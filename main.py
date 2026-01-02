@@ -4,7 +4,7 @@ import csv
 import io
 import json
 from datetime import datetime, timedelta
-from google import genai  # [NEW] Google Gen AI SDK (v1beta/v2 호환)
+from google import genai
 
 # ------------------------------------------------------------------------------
 # [설정] GitHub Secrets 환경변수
@@ -20,7 +20,7 @@ def run_daily_coach():
     # 1. 한국 시간(KST) 설정
     kst_now = datetime.now() + timedelta(hours=9)
     today_str = kst_now.strftime("%Y-%m-%d")
-    print(f"🚀 [AI Coach] Started at {kst_now} (KST) using Gemini 3.0 Pro Preview")
+    print(f"🚀 [AI Coach] Started at {kst_now} (KST) using Gemini 3.0 Flash Preview")
 
     try:
         # ----------------------------------------------------------------------
@@ -94,9 +94,9 @@ def run_daily_coach():
         print(f"   📊 Status: FTP {current_ftp}W, CTL {ctl:.1f}, TSB {tsb:.1f}")
 
         # ----------------------------------------------------------------------
-        # 4. Gemini 3.0 Pro Preview 훈련 설계 (SDK 사용)
+        # 4. Gemini 3.0 Flash Preview 훈련 설계 (SDK 사용)
         # ----------------------------------------------------------------------
-        print("3️⃣ Asking Gemini 3.0 Pro Preview to design workout...")
+        print("3️⃣ Asking Gemini 3.0 Flash Preview to design workout...")
         
         prompt = f"""
         Role: Expert Cycling Coach. 전문적인 연구결과 기반의 워크아웃을 짜주는 코치
@@ -121,154 +121,4 @@ def run_daily_coach():
            - -10 <= TSB <= 10: Sweet Spot.
            - TSB > 10: VO2 Max (90-95% of 5m Max {five_min_power}W).
 
-        [STRICT OUTPUT FORMAT - INTERVALS.ICU SYNTAX]
-        1. STRUCTURE:
-           Warmup
-           - [step]
-           
-           [Just list the main workout steps here. Do NOT use "Main Set" header]
-           
-           Cooldown
-           - [step]
-
-        2. SYNTAX RULES:
-           - Warmup/Cooldown: MUST use 'ramp' keyword for slopes. (e.g., "- 10m ramp 40-60%")
-           - 만약 파워존 단위로 만들고 싶을 경우, '%' 대신 'z1', 'z4'와 같이 'z'와 숫자를 써 준다.(e.g. "- 10m30s ramp z1-z2")
-           - Intervals: Start with "-". (e.g., "- 5m 65%")
-           - 반복하고 싶은 경우, "3x", "4x" 와 같이 반복할 횟수를 header로서 써 준다.
-               (e.g. 
-                    "2x
-                     - 5m 40%
-                     - 10m z2
-                     - 5m z4-z5").
-           - 만약 free ride 세션을 넣고 싶은 경우, 강도 대신 freeride 라고 써 준다. (e.g. "- 5m freeride").
-           - warmup세션, main 세션, cooldown세션은 구분을 위해 엔터를 2번 쳐 준다.
-        
-        3. The VERY LAST LINE must be the status summary:
-           "Status: FTP {current_ftp}W | W' {w_prime}J | CTL {ctl:.1f} | ATL {atl:.1f} | TSB {tsb:.1f}"
-           
-        4. No intro/outro text.
-
-        [작성 예시 (문법 참고만 할 것)] 
-            "
-            Warmup
-            - 10m ramp z1-z2
-
-            3x
-            - 5m z2
-            - 5m z3
-            - 3m z4
-            - 2m Freeride
-
-            Cooldown
-            - 5m ramp z2-z1
-
-            Status: FTP 168w | W' 13500J | CTL 14 | ATL 3 | TSB 11
-            "
-        """
-        
-        # [NEW] Google Gen AI SDK 사용 (AI Studio 표준 방식)
-        client = genai.Client(api_key=GEMINI_API_KEY)
-        
-        response = client.models.generate_content(
-            model='gemini-3-pro-preview', # 최신 모델 ID
-            contents=prompt
-        )
-        
-        if not response.text:
-            print(f"❌ Gemini Error: No response text generated.")
-            exit(1)
-
-        raw_text = response.text
-        
-        # ----------------------------------------------------------------------
-        # 텍스트 정제 (반복문 3x, 파워존 z2 지원)
-        # ----------------------------------------------------------------------
-        lines = raw_text.split('\n')
-        workout_lines = []
-        status_line = ""
-        valid_headers = ["Warmup", "Cooldown"]
-
-        for line in lines:
-            line = line.strip()
-            if not line: continue
-            
-            # 1. 상태 라인 분리
-            if line.startswith("Status:"):
-                status_line = line
-                continue
-            
-            # 2. Warmup / Cooldown 헤더 처리
-            is_valid_header = False
-            for h in valid_headers:
-                if line.lower().startswith(h.lower()):
-                    workout_lines.append(line)
-                    is_valid_header = True
-                    break
-            if is_valid_header: continue
-            
-            # 3. Main Set 헤더 삭제
-            if "main set" in line.lower():
-                continue
-
-            # 4. 반복문 헤더 처리 (예: "3x", "4x")
-            # 숫자로 시작하고 'x'로 끝나면 대시(-) 없이 추가
-            if line[0].isdigit() and line.lower().endswith('x'):
-                workout_lines.append(line)
-                continue
-
-            # 5. 일반 워크아웃 스텝
-            # 숫자로 시작하면 대시(-) 추가
-            if line[0].isdigit():
-                line = "- " + line
-            
-            # 대시(-)로 시작하는 줄 추가
-            if line.startswith('-'):
-                workout_lines.append(line)
-        
-        clean_code = "\n".join(workout_lines)
-        if status_line:
-            clean_code += f"\n\n{status_line}"
-        
-        print(f"   📝 Generated Code:\n{'-'*20}\n{clean_code}\n{'-'*20}")
-        if not clean_code: exit(1)
-
-        # ----------------------------------------------------------------------
-        # 5. 라이브러리 및 캘린더 등록
-        # ----------------------------------------------------------------------
-        print(f"4️⃣ Uploading to Intervals.icu...")
-        
-        if ctl < 30 or five_min_power == 0:
-            workout_name = f"AI Coach: Detrained (CTL {ctl:.1f})"
-        else:
-            workout_name = f"AI Coach: TSB {tsb:.1f}"
-
-        workout_payload = {
-            "name": workout_name,
-            "description": clean_code,
-            "type": "Ride",
-            "sport": "Ride",
-            "folder_id": TARGET_FOLDER_ID
-        }
-        
-        create_resp = requests.post(f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/workouts", auth=auth, json=workout_payload)
-        workout_id = create_resp.json()['id']
-        
-        event_payload = {
-            "category": "WORKOUT",
-            "start_date_local": kst_now.replace(hour=19, minute=0, second=0).strftime("%Y-%m-%dT%H:%M:%S"),
-            "name": workout_name,
-            "type": "Ride",
-            "workout_id": workout_id,
-            "description": clean_code
-        }
-        
-        requests.post(f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/events/bulk?upsert=true", auth=auth, json=[event_payload])
-        print(f"🎉 Success! Workout scheduled with Gemini 3.0 Pro Preview.")
-
-    except Exception as e:
-        print(f"❌ Critical Error: {e}")
-        exit(1)
-
-if __name__ == "__main__":
-    run_daily_coach()
+        [STRICT OUTPUT FORMAT - INTERVALS.ICU SYNTAX
