@@ -132,8 +132,15 @@ def run_daily_coach():
 
         2. SYNTAX RULES:
            - Warmup/Cooldown: MUST use 'ramp' keyword for slopes. (e.g., "- 10m ramp 40-60%")
+           - 만약 파워존 단위로 만들고 싶을 경우, '%' 대신 'z1', 'z4'와 같이 'z'와 숫자를 써 준다.(e.g. "- 10m30s ramp z1-z2")
            - Intervals: Start with "-". (e.g., "- 5m 65%")
-           - UNROLL LOOPS (Do not use "3x").
+           - 반복하고 싶은 경우, "3x", "4x" 와 같이 반복할 횟수를 header로서 써 준다
+               (e.g. 
+                    "2x
+                     - 5m 40%
+                     - 10m z2
+                     - 5m z4-z5")
+           - 만약 free ride 세션을 넣고 싶은 경우, 강도 대신 freeride 라고 써 준다 (e.g. "- 5m freeride")
         
         3. The VERY LAST LINE must be the status summary:
            "Status: FTP {current_ftp}W | W' {w_prime}J | CTL {ctl:.1f} | ATL {atl:.1f} | TSB {tsb:.1f}"
