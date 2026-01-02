@@ -98,8 +98,8 @@ def run_daily_coach():
         print("3️⃣ Asking Gemini to design workout...")
         
         prompt = f"""
-        Role: Expert Cycling Coach.
-        Task: Create a 1-hour structured cycling workout code for Intervals.icu.
+        Role: Expert Cycling Coach. 전문적인 연구결과 기반의 워크아웃을 짜주는 코치
+        Task: Create a 1-hour structured cycling workout code for Intervals.icu. 단, 너무 지루하지 않게 다채로운 스테이지로 구성할 것.
         
         [ATHLETE DATA]
         - FTP: {current_ftp} W
