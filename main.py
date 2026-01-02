@@ -167,7 +167,7 @@ def run_daily_coach():
             
         """
         
-        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
+        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key={GEMINI_API_KEY}"
         res = requests.post(gemini_url, json={"contents": [{"parts": [{"text": prompt}]}]})
         
         if res.status_code != 200:
