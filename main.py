@@ -142,7 +142,7 @@ def run_daily_coach():
                      - 10m z2
                      - 5m z4-z5").
            - 만약 free ride 세션을 넣고 싶은 경우, 강도 대신 freeride 라고 써 준다. (e.g. "- 5m freeride").
-           - (중요!) Header 사이에는 꼭 줄바꿈을 두줄 넣어준다. 
+           - (중요!) 새로운 Header를 추가할 경우에는 추가하는 Header 위에 꼭 줄바꿈을 두줄 넣어준다. 
         
         3. The VERY LAST LINE must be the status summary:
            "Status: FTP {current_ftp}W | W' {w_prime}J | CTL {ctl:.1f} | ATL {atl:.1f} | TSB {tsb:.1f}"
