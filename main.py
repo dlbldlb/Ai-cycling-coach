@@ -23,7 +23,7 @@ def run_daily_coach():
 
     try:
         # ----------------------------------------------------------------------
-        # 2. 데이터 추출 1: Wellness (FTP, CTL 확인)
+        # 2. 데이터 추출 1: Wellness
         # ----------------------------------------------------------------------
         print("1️⃣ Fetching Wellness Data...")
         w_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/wellness"
@@ -38,7 +38,6 @@ def run_daily_coach():
         atl = w_data.get('atl', 0)     # Fatigue
         tsb = ctl - atl                # Form
 
-        # FTP 백업 로직
         if current_ftp is None:
             s_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}"
             s_resp = requests.get(s_url, auth=auth)
@@ -68,19 +67,15 @@ def run_daily_coach():
         }
         
         csv_resp = requests.get(csv_url, auth=auth, params=params)
-        
         five_min_power = None
         
-        # CSV 로직 (실패시 종료하는 엄격 모드 유지)
         if csv_resp.status_code == 200:
             f = io.StringIO(csv_resp.text)
             reader = csv.DictReader(f)
-            
             if reader.fieldnames:
                 clean_headers = [name.replace('\ufeff', '').strip() for name in reader.fieldnames]
                 reader.fieldnames = clean_headers
                 target_col = next((col for col in clean_headers if '42' in col), None)
-                
                 if target_col:
                     for row in reader:
                         secs_val = row.get('secs') or row.get('Time')
@@ -91,7 +86,6 @@ def run_daily_coach():
                                 print(f"   🎯 Found 5m Power: {five_min_power} W")
                             break
         
-        # 5분 파워가 없으면(2달간 기록 없음) -> 0으로 처리해서 초기화 모드 발동
         if five_min_power is None:
             print("   ⚠️ 42일간 기록이 없습니다. (초기화 상태 추정)")
             five_min_power = 0
@@ -99,7 +93,7 @@ def run_daily_coach():
         print(f"   📊 Status: FTP {current_ftp}W, CTL {ctl:.1f}, TSB {tsb:.1f}")
 
         # ----------------------------------------------------------------------
-        # 4. Gemini 훈련 설계 (상태 표시 요청 추가)
+        # 4. Gemini 훈련 설계 (Ramp 문법 + Main Set 헤더 삭제)
         # ----------------------------------------------------------------------
         print("3️⃣ Asking Gemini to design workout...")
         
@@ -109,29 +103,42 @@ def run_daily_coach():
         
         [ATHLETE DATA]
         - FTP: {current_ftp} W
-        - W' (Anaerobic Capacity): {w_prime} J
-        - CTL (Fitness): {ctl:.1f}
-        - ATL (Fatigue): {atl:.1f}
-        - TSB (Form): {tsb:.1f}
-        - Recent 5m Max Power: {five_min_power} W
+        - W': {w_prime} J
+        - CTL: {ctl:.1f}
+        - ATL: {atl:.1f}
+        - TSB: {tsb:.1f}
+        - Recent 5m Max: {five_min_power} W
 
         [INTELLIGENT COACHING LOGIC]
-        1. DETRAINING CHECK (Priority):
+        1. DETRAINING CHECK:
            ** IF CTL < 30 OR Recent 5m Max Power == 0 **:
-           - Diagnosis: Athlete is DETRAINED.
-           - Action: STRICTLY Zone 2 (Endurance, 55-65% FTP). NO High Intensity.
+           - Diagnosis: DETRAINED.
+           - Action: STRICTLY Zone 2 (55-65% FTP). NO High Intensity.
            
-        2. NORMAL TRAINING (If CTL >= 30):
+        2. NORMAL TRAINING (CTL >= 30):
            - TSB < -10: Recovery (Zone 1).
            - -10 <= TSB <= 10: Sweet Spot.
-           - TSB > 10: VO2 Max (Target 90-95% of 5m Max {five_min_power}W).
+           - TSB > 10: VO2 Max (90-95% of 5m Max {five_min_power}W).
 
-        [STRICT OUTPUT FORMAT]
-        1. First line MUST be the status summary:
+        [STRICT OUTPUT FORMAT - INTERVALS.ICU SYNTAX]
+        1. STRUCTURE:
+           Warmup
+           - [step]
+           
+           [Just list the main workout steps here. Do NOT use "Main Set" header]
+           
+           Cooldown
+           - [step]
+
+        2. SYNTAX RULES:
+           - Warmup/Cooldown: MUST use 'ramp' keyword for slopes. (e.g., "- 10m ramp 40-60%")
+           - Intervals: Start with "-". (e.g., "- 5m 65%")
+           - UNROLL LOOPS (Do not use "3x").
+        
+        3. The VERY LAST LINE must be the status summary:
            "Status: FTP {current_ftp}W | W' {w_prime}J | CTL {ctl:.1f} | ATL {atl:.1f} | TSB {tsb:.1f}"
-        2. Followed by workout steps (start with "-").
-        3. No intro/outro text.
-        4. UNROLL LOOPS.
+           
+        4. No intro/outro text.
         """
         
         gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash:generateContent?key={GEMINI_API_KEY}"
@@ -144,29 +151,49 @@ def run_daily_coach():
         raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
         
         # ----------------------------------------------------------------------
-        # [수정됨] 텍스트 정제 로직: 'Status:' 라인을 살려야 함
+        # [수정됨] 텍스트 정제: Warmup, Cooldown만 허용 (Main Set 제거)
         # ----------------------------------------------------------------------
         lines = raw_text.split('\n')
-        clean_lines = []
+        workout_lines = []
+        status_line = ""
         
+        # 허용할 헤더 (Main Set은 일부러 뺌)
+        valid_headers = ["Warmup", "Cooldown"]
+
         for line in lines:
             line = line.strip()
             if not line: continue
             
-            # 1. 상태 표시줄이면 통과
+            # 1. 상태 표시줄 찾기
             if line.startswith("Status:"):
-                clean_lines.append(line)
+                status_line = line
                 continue
-                
-            # 2. 숫자로 시작하면 대시 붙여서 통과
+            
+            # 2. 헤더 라인인지 확인
+            is_header_line = False
+            for h in valid_headers:
+                if line.lower().startswith(h.lower()):
+                    workout_lines.append(line)
+                    is_header_line = True
+                    break
+            
+            if is_header_line: continue
+            
+            # "Main Set"이라고 쓴 줄은 무시 (Gemini가 실수로 써도 삭제)
+            if "main set" in line.lower():
+                continue
+
+            # 3. 워크아웃 스텝 라인 (숫자나 대시로 시작)
             if line[0].isdigit():
                 line = "- " + line
-                
-            # 3. 대시로 시작하면 통과 (워크아웃 스텝)
+            
             if line.startswith('-'):
-                clean_lines.append(line)
-                
-        clean_code = "\n".join(clean_lines)
+                workout_lines.append(line)
+        
+        # 재조립
+        clean_code = "\n".join(workout_lines)
+        if status_line:
+            clean_code += f"\n\n{status_line}"
         
         print(f"   📝 Generated Code:\n{'-'*20}\n{clean_code}\n{'-'*20}")
         if not clean_code: exit(1)
@@ -176,7 +203,6 @@ def run_daily_coach():
         # ----------------------------------------------------------------------
         print(f"4️⃣ Uploading to Intervals.icu...")
         
-        # 제목 설정 로직
         if ctl < 30 or five_min_power == 0:
             workout_name = f"AI Coach: Detrained (CTL {ctl:.1f})"
         else:
