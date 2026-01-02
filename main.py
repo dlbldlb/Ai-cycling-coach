@@ -4,6 +4,7 @@ import csv
 import io
 import json
 from datetime import datetime, timedelta
+from google import genai  # [NEW] Google Gen AI SDK (v1beta/v2 호환)
 
 # ------------------------------------------------------------------------------
 # [설정] GitHub Secrets 환경변수
@@ -19,7 +20,7 @@ def run_daily_coach():
     # 1. 한국 시간(KST) 설정
     kst_now = datetime.now() + timedelta(hours=9)
     today_str = kst_now.strftime("%Y-%m-%d")
-    print(f"🚀 [AI Coach] Started at {kst_now} (KST)")
+    print(f"🚀 [AI Coach] Started at {kst_now} (KST) using Gemini 3.0 Pro Preview")
 
     try:
         # ----------------------------------------------------------------------
@@ -93,9 +94,9 @@ def run_daily_coach():
         print(f"   📊 Status: FTP {current_ftp}W, CTL {ctl:.1f}, TSB {tsb:.1f}")
 
         # ----------------------------------------------------------------------
-        # 4. Gemini 훈련 설계 (Ramp 문법 + Main Set 헤더 삭제)
+        # 4. Gemini 3.0 Pro Preview 훈련 설계 (SDK 사용)
         # ----------------------------------------------------------------------
-        print("3️⃣ Asking Gemini to design workout...")
+        print("3️⃣ Asking Gemini 3.0 Pro Preview to design workout...")
         
         prompt = f"""
         Role: Expert Cycling Coach. 전문적인 연구결과 기반의 워크아웃을 짜주는 코치
@@ -164,59 +165,67 @@ def run_daily_coach():
 
             Status: FTP 168w | W' 13500J | CTL 14 | ATL 3 | TSB 11
             "
-            
         """
         
-        gemini_url = f"https://generativelanguage.googleapis.com/v1beta/models/gemini-3-pro-preview:generateContent?key={GEMINI_API_KEY}"
-        res = requests.post(gemini_url, json={"contents": [{"parts": [{"text": prompt}]}]})
+        # [NEW] Google Gen AI SDK 사용 (AI Studio 표준 방식)
+        client = genai.Client(api_key=GEMINI_API_KEY)
         
-        if res.status_code != 200:
-            print(f"❌ Gemini Error: {res.text}")
+        response = client.models.generate_content(
+            model='gemini-3-pro-preview', # 최신 모델 ID
+            contents=prompt
+        )
+        
+        if not response.text:
+            print(f"❌ Gemini Error: No response text generated.")
             exit(1)
 
-        raw_text = res.json()['candidates'][0]['content']['parts'][0]['text']
+        raw_text = response.text
         
         # ----------------------------------------------------------------------
-        # [수정됨] 텍스트 정제: Warmup, Cooldown만 허용 (Main Set 제거)
+        # 텍스트 정제 (반복문 3x, 파워존 z2 지원)
         # ----------------------------------------------------------------------
         lines = raw_text.split('\n')
         workout_lines = []
         status_line = ""
-        
-        # 허용할 헤더 (Main Set은 일부러 뺌)
         valid_headers = ["Warmup", "Cooldown"]
 
         for line in lines:
             line = line.strip()
             if not line: continue
             
-            # 1. 상태 표시줄 찾기
+            # 1. 상태 라인 분리
             if line.startswith("Status:"):
                 status_line = line
                 continue
             
-            # 2. 헤더 라인인지 확인
-            is_header_line = False
+            # 2. Warmup / Cooldown 헤더 처리
+            is_valid_header = False
             for h in valid_headers:
                 if line.lower().startswith(h.lower()):
                     workout_lines.append(line)
-                    is_header_line = True
+                    is_valid_header = True
                     break
+            if is_valid_header: continue
             
-            if is_header_line: continue
-            
-            # "Main Set"이라고 쓴 줄은 무시 (Gemini가 실수로 써도 삭제)
+            # 3. Main Set 헤더 삭제
             if "main set" in line.lower():
                 continue
 
-            # 3. 워크아웃 스텝 라인 (숫자나 대시로 시작)
+            # 4. 반복문 헤더 처리 (예: "3x", "4x")
+            # 숫자로 시작하고 'x'로 끝나면 대시(-) 없이 추가
+            if line[0].isdigit() and line.lower().endswith('x'):
+                workout_lines.append(line)
+                continue
+
+            # 5. 일반 워크아웃 스텝
+            # 숫자로 시작하면 대시(-) 추가
             if line[0].isdigit():
                 line = "- " + line
             
+            # 대시(-)로 시작하는 줄 추가
             if line.startswith('-'):
                 workout_lines.append(line)
         
-        # 재조립
         clean_code = "\n".join(workout_lines)
         if status_line:
             clean_code += f"\n\n{status_line}"
@@ -255,7 +264,7 @@ def run_daily_coach():
         }
         
         requests.post(f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/events/bulk?upsert=true", auth=auth, json=[event_payload])
-        print(f"🎉 Success! Workout scheduled.")
+        print(f"🎉 Success! Workout scheduled with Gemini 3.0 Pro Preview.")
 
     except Exception as e:
         print(f"❌ Critical Error: {e}")
