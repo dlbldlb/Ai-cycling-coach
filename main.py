@@ -20,49 +20,79 @@ def run_daily_coach():
     # 1. 한국 시간(KST) 설정
     kst_now = datetime.now() + timedelta(hours=9)
     today_str = kst_now.strftime("%Y-%m-%d")
+    # 최근 7일치 데이터를 조회하기 위한 시작 날짜
+    week_ago_str = (kst_now - timedelta(days=7)).strftime("%Y-%m-%d")
+    
     print(f"🚀 [AI Coach] Started at {kst_now} (KST) using Gemini 3.0 Flash Preview")
 
     try:
         # ----------------------------------------------------------------------
-        # 2. 데이터 추출 1: Wellness (HRV sdnn 우선 탐색)
+        # 2. 데이터 추출 1: Wellness (최근 7일치 조회 & 역추적)
         # ----------------------------------------------------------------------
-        print("1️⃣ Fetching Wellness Data...")
+        print(f"1️⃣ Fetching Wellness Data ({week_ago_str} ~ {today_str})...")
         w_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/wellness"
-        w_resp = requests.get(w_url, auth=auth, params={"oldest": today_str})
-        w_data = w_resp.json()[-1] if w_resp.json() else {}
         
-        # [Debug] 실제 들어오는 데이터 키값 확인 (로그 확인용)
-        if w_data:
-            print(f"   🔍 Available Data Keys: {list(w_data.keys())}")
-            print(f"   🔍 Target Values -> sdnn: {w_data.get('sdnn')}, hrv: {w_data.get('hrv')}")
+        # 7일치 데이터를 한 번에 가져옴
+        w_resp = requests.get(w_url, auth=auth, params={"oldest": week_ago_str, "newest": today_str})
+        w_data_list = w_resp.json() if w_resp.json() else []
         
-        ride_info = next((i for i in w_data.get('sportInfo', []) if i.get('type') == 'Ride'), {})
+        # [데이터 찾기 로직]
+        # 1. FTP, CTL 등은 '가장 최신 데이터(오늘)' 기준 (없으면 그 전날)
+        latest_data = w_data_list[-1] if w_data_list else {}
         
-        current_ftp = ride_info.get('eftp')
-        w_prime = ride_info.get('wPrime')
-        ctl = w_data.get('ctl', 0)     # Fitness
-        atl = w_data.get('atl', 0)     # Fatigue
-        tsb = ctl - atl                # Form
+        # 2. HRV 데이터는 '값이 있는 가장 최근 날짜'를 역추적 (Lookback)
+        hrv_val = None
+        hrv_type = "None"
+        hrv_date = "N/A"
         
-        # [NEW] HRV 데이터 추출 로직 (sdnn 우선)
-        # 1순위: 'sdnn' (Intervals.icu API 표준 키값)
-        hrv_val = w_data.get('sdnn')
-        hrv_type = "SDNN"
-
-        # 2순위: 'sdnn'이 없으면 'hrv' (rMSSD) 사용
-        if hrv_val is None:
-            hrv_val = w_data.get('hrv')
-            if hrv_val:
-                hrv_type = "rMSSD" # SDNN이 없어서 대체됨
-            else:
-                hrv_type = "None"
+        # 리스트를 거꾸로(최신순) 뒤집어서 탐색
+        for day_data in reversed(w_data_list):
+            # [중요] 디버깅 결과 'hrvSDNN'에 값이 있었으므로, 이것을 1순위로 찾음
+            val = day_data.get('hrvSDNN')
+            if val is not None:
+                hrv_val = val
+                hrv_type = "SDNN"
+                hrv_date = day_data.get('id') # 날짜
+                break 
             
+            # 2순위: 혹시 sdnn 키에 들어있을 경우
+            val = day_data.get('sdnn')
+            if val is not None:
+                hrv_val = val
+                hrv_type = "SDNN"
+                hrv_date = day_data.get('id')
+                break
+
+            # 3순위: hrv (rMSSD)
+            val = day_data.get('hrv')
+            if val is not None:
+                hrv_val = val
+                hrv_type = "rMSSD"
+                hrv_date = day_data.get('id')
+                break
+        
         # HRV 표시 문자열 생성
         if hrv_val:
-            hrv_display = f"{hrv_val} ms ({hrv_type})"
+            # 소수점 1자리까지만 표시
+            hrv_val = round(float(hrv_val), 1)
+            
+            if hrv_date == today_str:
+                hrv_display = f"{hrv_val} ms ({hrv_type})"
+            else:
+                # 과거 데이터면 날짜 표시 (예: 39.8 ms (SDNN, 2026-01-02))
+                hrv_display = f"{hrv_val} ms ({hrv_type}, {hrv_date})"
         else:
             hrv_display = "N/A"
 
+        # FTP, W' 등 나머지 데이터 추출
+        ride_info = next((i for i in latest_data.get('sportInfo', []) if i.get('type') == 'Ride'), {})
+        current_ftp = ride_info.get('eftp')
+        w_prime = ride_info.get('wPrime')
+        ctl = latest_data.get('ctl', 0)     
+        atl = latest_data.get('atl', 0)     
+        tsb = ctl - atl                
+
+        # FTP 백업 로직
         if current_ftp is None:
             s_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}"
             s_resp = requests.get(s_url, auth=auth)
@@ -148,6 +178,7 @@ def run_daily_coach():
              -> Action: Priority is RECOVERY. Limit intensity to Zone 2 or low Sweet Spot. Avoid VO2 Max/Anaerobic.
            - Note: SDNN and rMSSD have different scales. Use general physiological principles to judge.
            - If HRV is "N/A", ignore this check and rely on TSB.
+           - If HRV data is old (check date in status), give it less weight.
            
         3. NORMAL TRAINING (If CTL >= 30 and HRV is stable):
            - TSB < -10: Recovery (Zone 1).
@@ -187,7 +218,6 @@ def run_daily_coach():
         
         client = genai.Client(api_key=GEMINI_API_KEY)
         
-        # [모델] gemini-3-flash-preview
         response = client.models.generate_content(
             model='gemini-3-flash-preview', 
             contents=prompt
