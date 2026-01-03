@@ -24,16 +24,17 @@ def run_daily_coach():
 
     try:
         # ----------------------------------------------------------------------
-        # 2. 데이터 추출 1: Wellness (HRV SDNN 정밀 확인)
+        # 2. 데이터 추출 1: Wellness (HRV sdnn 우선 탐색)
         # ----------------------------------------------------------------------
         print("1️⃣ Fetching Wellness Data...")
         w_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/wellness"
         w_resp = requests.get(w_url, auth=auth, params={"oldest": today_str})
         w_data = w_resp.json()[-1] if w_resp.json() else {}
         
-        # [Debug] 실제 들어오는 데이터 키값 확인 (로그에서 확인 가능)
+        # [Debug] 실제 들어오는 데이터 키값 확인 (로그 확인용)
         if w_data:
             print(f"   🔍 Available Data Keys: {list(w_data.keys())}")
+            print(f"   🔍 Target Values -> sdnn: {w_data.get('sdnn')}, hrv: {w_data.get('hrv')}")
         
         ride_info = next((i for i in w_data.get('sportInfo', []) if i.get('type') == 'Ride'), {})
         
@@ -43,17 +44,24 @@ def run_daily_coach():
         atl = w_data.get('atl', 0)     # Fatigue
         tsb = ctl - atl                # Form
         
-        # [NEW] HRV 데이터 추출 로직 (우선순위: sdnn -> hrv)
-        # Intervals.icu에서 'sdnn' 키가 있으면 그것을, 없으면 일반 'hrv'(rMSSD)를 사용
+        # [NEW] HRV 데이터 추출 로직 (sdnn 우선)
+        # 1순위: 'sdnn' (Intervals.icu API 표준 키값)
         hrv_val = w_data.get('sdnn')
         hrv_type = "SDNN"
-        
+
+        # 2순위: 'sdnn'이 없으면 'hrv' (rMSSD) 사용
         if hrv_val is None:
             hrv_val = w_data.get('hrv')
-            hrv_type = "rMSSD" # SDNN이 없어서 대체됨
+            if hrv_val:
+                hrv_type = "rMSSD" # SDNN이 없어서 대체됨
+            else:
+                hrv_type = "None"
             
-        # HRV 데이터가 아예 없는 경우 처리
-        hrv_display = f"{hrv_val} ms ({hrv_type})" if hrv_val else "N/A"
+        # HRV 표시 문자열 생성
+        if hrv_val:
+            hrv_display = f"{hrv_val} ms ({hrv_type})"
+        else:
+            hrv_display = "N/A"
 
         if current_ftp is None:
             s_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}"
@@ -110,7 +118,7 @@ def run_daily_coach():
         print(f"   📊 Status: FTP {current_ftp}W, CTL {ctl:.1f}, TSB {tsb:.1f}, HRV {hrv_display}")
 
         # ----------------------------------------------------------------------
-        # 4. Gemini 3.0 Flash Preview 훈련 설계 (HRV 참조 강화)
+        # 4. Gemini 3.0 Flash Preview 훈련 설계
         # ----------------------------------------------------------------------
         print("3️⃣ Asking Gemini 3.0 Flash Preview to design workout...")
         
@@ -139,6 +147,7 @@ def run_daily_coach():
              -> Diagnosis: HIGH PHYSIOLOGICAL STRESS.
              -> Action: Priority is RECOVERY. Limit intensity to Zone 2 or low Sweet Spot. Avoid VO2 Max/Anaerobic.
            - Note: SDNN and rMSSD have different scales. Use general physiological principles to judge.
+           - If HRV is "N/A", ignore this check and rely on TSB.
            
         3. NORMAL TRAINING (If CTL >= 30 and HRV is stable):
            - TSB < -10: Recovery (Zone 1).
