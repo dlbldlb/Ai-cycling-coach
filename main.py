@@ -24,12 +24,16 @@ def run_daily_coach():
 
     try:
         # ----------------------------------------------------------------------
-        # 2. 데이터 추출 1: Wellness
+        # 2. 데이터 추출 1: Wellness (HRV SDNN 정밀 확인)
         # ----------------------------------------------------------------------
         print("1️⃣ Fetching Wellness Data...")
         w_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}/wellness"
         w_resp = requests.get(w_url, auth=auth, params={"oldest": today_str})
         w_data = w_resp.json()[-1] if w_resp.json() else {}
+        
+        # [Debug] 실제 들어오는 데이터 키값 확인 (로그에서 확인 가능)
+        if w_data:
+            print(f"   🔍 Available Data Keys: {list(w_data.keys())}")
         
         ride_info = next((i for i in w_data.get('sportInfo', []) if i.get('type') == 'Ride'), {})
         
@@ -38,6 +42,18 @@ def run_daily_coach():
         ctl = w_data.get('ctl', 0)     # Fitness
         atl = w_data.get('atl', 0)     # Fatigue
         tsb = ctl - atl                # Form
+        
+        # [NEW] HRV 데이터 추출 로직 (우선순위: sdnn -> hrv)
+        # Intervals.icu에서 'sdnn' 키가 있으면 그것을, 없으면 일반 'hrv'(rMSSD)를 사용
+        hrv_val = w_data.get('sdnn')
+        hrv_type = "SDNN"
+        
+        if hrv_val is None:
+            hrv_val = w_data.get('hrv')
+            hrv_type = "rMSSD" # SDNN이 없어서 대체됨
+            
+        # HRV 데이터가 아예 없는 경우 처리
+        hrv_display = f"{hrv_val} ms ({hrv_type})" if hrv_val else "N/A"
 
         if current_ftp is None:
             s_url = f"https://intervals.icu/api/v1/athlete/{ATHLETE_ID}"
@@ -91,10 +107,10 @@ def run_daily_coach():
             print("   ⚠️ 42일간 기록이 없습니다. (초기화 상태 추정)")
             five_min_power = 0
 
-        print(f"   📊 Status: FTP {current_ftp}W, CTL {ctl:.1f}, TSB {tsb:.1f}")
+        print(f"   📊 Status: FTP {current_ftp}W, CTL {ctl:.1f}, TSB {tsb:.1f}, HRV {hrv_display}")
 
         # ----------------------------------------------------------------------
-        # 4. Gemini 3.0 Flash Preview 훈련 설계 (SDK 사용)
+        # 4. Gemini 3.0 Flash Preview 훈련 설계 (HRV 참조 강화)
         # ----------------------------------------------------------------------
         print("3️⃣ Asking Gemini 3.0 Flash Preview to design workout...")
         
@@ -109,14 +125,22 @@ def run_daily_coach():
         - ATL: {atl:.1f}
         - TSB: {tsb:.1f}
         - Recent 5m Max: {five_min_power} W
+        - HRV Status: {hrv_display}
 
         [INTELLIGENT COACHING LOGIC]
         1. DETRAINING CHECK:
            ** IF CTL < 30 OR Recent 5m Max Power == 0 **:
            - Diagnosis: DETRAINED.
            - Action: STRICTLY Zone 2 (55-65% FTP). NO High Intensity.
+        
+        2. PHYSIOLOGICAL STRESS CHECK (HRV):
+           ** Analyze the provided HRV value ({hrv_display}). **
+           - IF HRV is significantly lower than usual (indicating high stress/poor recovery):
+             -> Diagnosis: HIGH PHYSIOLOGICAL STRESS.
+             -> Action: Priority is RECOVERY. Limit intensity to Zone 2 or low Sweet Spot. Avoid VO2 Max/Anaerobic.
+           - Note: SDNN and rMSSD have different scales. Use general physiological principles to judge.
            
-        2. NORMAL TRAINING (CTL >= 30):
+        3. NORMAL TRAINING (If CTL >= 30 and HRV is stable):
            - TSB < -10: Recovery (Zone 1).
            - -10 <= TSB <= 10: Sweet Spot.
            - TSB > 10: VO2 Max (90-95% of 5m Max {five_min_power}W).
@@ -135,43 +159,26 @@ def run_daily_coach():
            - Warmup/Cooldown: MUST use 'ramp' keyword for slopes. (e.g., "- 10m ramp 40-60%")
            - 만약 파워존 단위로 만들고 싶을 경우, '%' 대신 'z1', 'z4'와 같이 'z'와 숫자를 써 준다.(e.g. "- 10m30s ramp z1-z2")
            - Intervals: Start with "-". (e.g., "- 5m 65%")
+           
            - UNROLL LOOPS: Do NOT use "3x" or loop headers. Write every single step explicitly.
              (e.g., Instead of "2x -> 5m z2, 5m z4", write:
               "- 5m z2"
               "- 5m z4"
               "- 5m z2"
               "- 5m z4")
+              
            - 만약 free ride 세션을 넣고 싶은 경우, 강도 대신 freeride 라고 써 준다. (e.g. "- 5m freeride").
-           - (중요!) 새로운 Header를 추가할 경우에는 추가하는 Header 위에 꼭 줄바꿈을 두줄 넣어준다. 
+           - (중요!) 새로운 Header(Warmup 등)가 나올 때는, 그 위에 반드시 빈 줄을 추가해 줄 것.
         
         3. The VERY LAST LINE must be the status summary:
-           "Status: FTP {current_ftp}W | W' {w_prime}J | CTL {ctl:.1f} | ATL {atl:.1f} | TSB {tsb:.1f}"
+           "Status: FTP {current_ftp}W | W' {w_prime}J | CTL {ctl:.1f} | ATL {atl:.1f} | TSB {tsb:.1f} | HRV {hrv_display}"
            
         4. No intro/outro text.
-
-       [작성 예시 (문법 참고만 할 것)] 
-            "
-            Warmup
-            - 10m ramp z1-z2
-
-            - 5m z2
-            - 5m z3
-            - 3m z4
-            - 2m Freeride
-            - 5m z2
-            - 5m z3
-            - 3m z4
-            - 2m Freeride
-
-            Cooldown
-            - 5m ramp z2-z1
-
-            Status: FTP 168w | W' 13500J | CTL 14 | ATL 3 | TSB 11
-            "
         """
         
         client = genai.Client(api_key=GEMINI_API_KEY)
         
+        # [모델] gemini-3-flash-preview
         response = client.models.generate_content(
             model='gemini-3-flash-preview', 
             contents=prompt
@@ -195,27 +202,27 @@ def run_daily_coach():
             line = line.strip()
             if not line: continue
             
+            # 1. 상태 라인 분리
             if line.startswith("Status:"):
                 status_line = line
                 continue
             
+            # 2. 헤더 처리 (앞에 빈 줄 추가)
             is_valid_header = False
             for h in valid_headers:
                 if line.lower().startswith(h.lower()):
+                    if workout_lines: 
+                        workout_lines.append("") 
                     workout_lines.append(line)
                     is_valid_header = True
                     break
             if is_valid_header: continue
             
-            if "main set" in line.lower():
-                continue
+            # 3. Main Set / 반복문 헤더 삭제
+            if "main set" in line.lower(): continue
+            if line[0].isdigit() and line.lower().endswith('x'): continue
 
-            # 반복문 헤더 (숫자로 시작하고 'x'로 끝나는 경우)
-            if line[0].isdigit() and line.lower().endswith('x'):
-                workout_lines.append(line)
-                continue
-
-            # 일반 스텝 (숫자로 시작하면 대시 추가)
+            # 4. 일반 스텝
             if line[0].isdigit():
                 line = "- " + line
             
