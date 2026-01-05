@@ -167,10 +167,13 @@ def run_daily_coach():
 
         [INTELLIGENT COACHING LOGIC]
         1. DETRAINING CHECK:
-           ** IF CTL < 30 OR Recent 5m Max Power == 0 **:
-           - Diagnosis: DETRAINED.
-           - Action: STRICTLY Zone 2 (55-65% FTP). NO High Intensity.
-        
+   ** IF CTL < 30 OR Recent 5m Max Power == 0 **:
+   - Diagnosis: BASE BUILDING (DETRAINED).
+   - Action: Focus on Endurance (Zone 2, 60-70% FTP) to build aerobic base.
+   - Twist: To prevent boredom, INCLUDE short "Tempo" intervals (Zone 3, 76-88% FTP, e.g., 3x5m) or "Cadence Drills" (High RPM spins).
+   - Constraint: NO Threshold (Zone 4) or VO2 Max (Zone 5) efforts yet. Keep physiological stress low but engaging.
+
+
         2. PHYSIOLOGICAL STRESS CHECK (HRV):
            ** Analyze the provided HRV value ({hrv_display}). **
            - IF HRV is significantly lower than usual (indicating high stress/poor recovery):
