@@ -2,8 +2,9 @@ name: Daily AI Coach
 
 on:
   schedule:
-    # 매일 한국 시간 00:10 (UTC 15:10) 실행
-    - cron: '10 15 * * *'
+    # 매일 한국 시간 17:00 (UTC 08:00) 실행
+    # KST 17:00 - 9h = UTC 08:00
+    - cron: '0 8 * * *'
   workflow_dispatch: # 수동 실행 버튼 추가
 
 jobs:
